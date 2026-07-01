@@ -39,4 +39,8 @@ src/dll/obj/
 src/setup/ca/obj/
 src/setup/wix/obj/
 src/packages/
-#src/bin/*.exe
+src/bin/*.exp
+src/bin/*.lib
+src/bin/*.log
+src/bin/*.msi
+src/bin/*.wixpdb

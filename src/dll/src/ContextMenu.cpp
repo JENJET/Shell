@@ -2080,19 +2080,77 @@ namespace Nilesoft
 
 			if(!mii || (mii->title.empty() && !ident.equals(mii->wID)))
 			{
+				string item_title;
+				if(auto item_index = MENU::get_index(hMenu, di->itemID); item_index != MF_NOITEM)
+					item_title = MENU(hMenu).get_title(item_index, true);
+
+				const long image_size = _theme.image.size;
+
+				auto rcblock = *rc;
+				rcblock.top += _theme.back.margin.top;
+				rcblock.bottom -= _theme.back.margin.bottom;
+				rcblock.left += _theme.back.margin.left;
+				rcblock.right -= _theme.back.margin.right;
+
+				const auto width = rcblock.width();
+				const auto height = rcblock.height();
+
+				auto rcimg = rcblock;
+				auto rcText = rcblock;
+
+				rcimg.top = rcblock.top + ((height - image_size) / 2);
+				rcimg.bottom = rcimg.top + image_size;
+				rcimg.left = rcblock.left + _theme.back.padding.left;
+				rcimg.right = rcimg.left + image_size;
+
+				auto has_checked_image = menu->draw.checks && menu->draw.images && (_theme.image.display >= 2);
+
+				if(menu->draw.has_align())
+				{
+					rcText.left = rcblock.left + _theme.image.size + _theme.image.gap + _theme.back.padding.left;
+					if(has_checked_image)
+						rcText.left += _theme.image.size + _theme.image.gap;
+				}
+				else
+				{
+					rcText.left += _theme.back.padding.left;
+				}
+
+				rcText.right -= _theme.back.padding.right;
+
+				dc.fill_rect(*rc, composition ? dc.stock_brush(BLACK_BRUSH) : _hbackground);
+
+				uint8_t op = back_color.a;
+				Color border_color = _theme.back.border.nor;
+
+				if(state.selected)
+				{
+					if(state.disabled && _theme.back.color.sel_dis.a > 0)
+						op = _theme.back.color.sel_dis.a;
+					else if(!state.disabled && _theme.back.color.sel_dis.a > 0)
+						op = _theme.back.color.sel.a;
+
+					border_color = state.disabled ? _theme.back.border.sel_dis : _theme.back.border.sel;
+				}
+				else
+				{
+					if(state.disabled && _theme.back.color.nor_dis.a > 0)
+						op = _theme.back.color.nor_dis.a;
+					else if(!state.disabled && _theme.back.color.nor.a > 0)
+						op = _theme.back.color.nor.a;
+
+					if(state.disabled)
+						border_color = _theme.back.border.nor_dis;
+				}
+
+				back_color.a = op;
+				draw_rect(&dc, rcblock.point(), { width, height }, back_color, border_color, _theme.back.radius);
+
+				// Keep native icon colors, but do not keep native text/background colors.
 				if(auto_gdi<HBITMAP> hbitmap(dc.createbitmap(rc->width(), rc->height())); hbitmap)
 				{
 					DC dcmem(dc.CreateCompatibleDC(), 1);
 					dcmem.select_bitmap(hbitmap.get());
-
-					auto old_hdc = di->hDC;
-					di->hDC = dcmem;
-
-					lret = msg.invoke();
-					
-					di->hDC = old_hdc;
-
-					std::vector<COLORREF> pixels(rc->width() * rc->height());
 
 					BITMAPINFOHEADER bmpInfo = { 0 };
 					bmpInfo.biSize = sizeof(bmpInfo);
@@ -2102,26 +2160,122 @@ namespace Nilesoft
 					bmpInfo.biBitCount = 32;
 					bmpInfo.biCompression = BI_RGB;
 
-					::GetDIBits(dcmem, hbitmap.get(), 0, rc->height(), &pixels[0], (LPBITMAPINFO)&bmpInfo, DIB_RGB_COLORS);
+					auto w = rc->width(), h = rc->height();
+					auto count = w * h;
 
-					std::for_each(pixels.begin(), pixels.end(), [](COLORREF &pixel) {
-						if(pixel != 0) // black pixels stay transparent
-							pixel |= 0xFF000000; // set alpha channel to 100%
-					});
+					auto draw_preview = item_title.empty();
+					auto recolor_preview_text = draw_preview &&
+						((int)text_color.r() + (int)text_color.g() + (int)text_color.b() > 384);
 
-					::SetDIBits(dcmem, hbitmap.get(), 0, rc->height(), &pixels[0], (LPBITMAPINFO)&bmpInfo, DIB_RGB_COLORS);
+					if(auto_gdi<HBRUSH> hbr(CreateSolidBrush(RGB(1, 2, 3))); hbr)
+						dcmem.fill_rect({ 0, 0, w, h }, hbr.get());
+
+					auto old_hdc = di->hDC;
+					auto old_rcItem = di->rcItem;
+					auto old_state = di->itemState;
+					di->hDC = dcmem;
+					di->rcItem = { 0, 0, w, h };
+					if(recolor_preview_text)
+						di->itemState |= ODS_SELECTED;
+					else
+						di->itemState &= ~ODS_SELECTED;
+					lret = msg.invoke();
+
+					std::vector<COLORREF> pixels(count);
+					::GetDIBits(dcmem, hbitmap.get(), 0, h, &pixels[0], (LPBITMAPINFO)&bmpInfo, DIB_RGB_COLORS);
+
+					di->hDC = old_hdc;
+					di->rcItem = old_rcItem;
+					di->itemState = old_state;
+
+					auto keep_right = item_title.empty()
+						? w
+						: std::max<long>(rcText.left, rcimg.right + (_theme.image.gap / 2)) - rc->left;
+					keep_right = std::max<long>(0, std::min<long>(w, keep_right));
+
+					// Use a far corner so the preview icon at the left edge is not sampled as background.
+					uint32_t bg = pixels[(h - 1) * w + (w - 1)];
+					int b0 = bg & 0xFF, b1 = (bg >> 8) & 0xFF, b2 = (bg >> 16) & 0xFF;
+
+					int max_diff = 0;
+					for(int i = 0; i < count; i++)
+					{
+						if((i % w) >= keep_right)
+							continue;
+
+						uint32_t p = pixels[i];
+						int d0 = abs(int(p & 0xFF) - b0);
+						int d1 = abs(int((p >> 8) & 0xFF) - b1);
+						int d2 = abs(int((p >> 16) & 0xFF) - b2);
+						int d = d0 > d1 ? (d0 > d2 ? d0 : d2) : (d1 > d2 ? d1 : d2);
+						if(d > max_diff) max_diff = d;
+					}
+
+					std::vector<COLORREF> out(count);
+					for(int i = 0; i < count; i++)
+					{
+						if((i % w) >= keep_right)
+						{
+							out[i] = 0;
+							continue;
+						}
+
+						if(max_diff == 0) { out[i] = 0; continue; }
+						uint32_t p = pixels[i];
+						int pb = p & 0xFF, pg = (p >> 8) & 0xFF, pr = (p >> 16) & 0xFF;
+						int d0 = abs(pb - b0);
+						int d1 = abs(pg - b1);
+						int d2 = abs(pr - b2);
+						int d = d0 > d1 ? (d0 > d2 ? d0 : d2) : (d1 > d2 ? d1 : d2);
+						int a = d * 255 / max_diff;
+						if(a == 0)
+							out[i] = 0;
+						else
+						{
+							int inv_a = 255 - a;
+							int out_r = (pr * 255 - b2 * inv_a + (a / 2)) / a;
+							int out_g = (pg * 255 - b1 * inv_a + (a / 2)) / a;
+							int out_b = (pb * 255 - b0 * inv_a + (a / 2)) / a;
+							if(out_r < 0) out_r = 0;
+							if(out_g < 0) out_g = 0;
+							if(out_b < 0) out_b = 0;
+							if(out_r > 255) out_r = 255;
+							if(out_g > 255) out_g = 255;
+							if(out_b > 255) out_b = 255;
+
+							auto pre_r = out_r * a / 255;
+							auto pre_g = out_g * a / 255;
+							auto pre_b = out_b * a / 255;
+							out[i] = (a << 24) | (pre_r << 16) | (pre_g << 8) | pre_b;
+						}
+					}
+
+					::SetDIBits(dcmem, hbitmap.get(), 0, h, &out[0], (LPBITMAPINFO)&bmpInfo, DIB_RGB_COLORS);
 					dc.draw_image(rc->point(), rc->size(), dcmem);
-
-					return lret;
 				}
 
-				dc.set_back_mode(true);
-				dc.set_back(back_color);
-				dc.set_text(text_color);
-				dc.fill_rect(di->rcItem, composition ? dc.stock_brush(BLACK_BRUSH) : _hbackground);
+				if(!item_title.empty())
+				{
+					auto txtfmt = DT_NOCLIP | DT_SINGLELINE | DT_VCENTER;
 
-				lret = msg.invoke();
+					if(_theme.text.prefix)
+						txtfmt |= _theme.text.prefix;
 
+					rcText.top = rc->top - dpi(1);
+					rcText.bottom = rc->bottom;
+
+					if(_hTheme)
+					{
+						draw_string(dc, font.handle, &rcText, text_color, item_title, item_title.length<int>(), DT_LEFT | txtfmt);
+					}
+					else
+					{
+						dc.set_text(text_color);
+						dc.draw_text(item_title, item_title.length<int>(), rcText, DT_LEFT | txtfmt);
+					}
+				}
+
+				dc.exclude_clip_rect(*rc);
 				return lret;
 			}
 
