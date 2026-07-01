@@ -8,20 +8,12 @@
 	tip.enabled=true
 }
 
-// localization
-$loc_path='imports\lang\'
-import lang loc_path + "en.nss"
-import lang if(path.exists(loc_path + sys.lang + ".nss"),
-               loc_path + sys.lang + ".nss",
-               loc_path + "en.nss")
-
-// or import lang 'imports/lang/en.nss'
-
 import 'imports/theme.nss'
 import 'imports/images.nss'
+
 import 'imports/modify.nss'
 
-menu(mode="multiple" title=loc.pin_unpin image=icon.pin)
+menu(mode="multiple" title="Pin/Unpin" image=icon.pin)
 {
 }
 

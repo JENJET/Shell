@@ -90,6 +90,7 @@ namespace Nilesoft
 			bool disabled = false;
 			bool radio_check = false;
 			int checked = 0;
+			bool native_ownerdraw = false;
 			ULONG_PTR dwItemData = 0;
 			HBITMAP image = nullptr;
 			menuitem_t *parent = nullptr;
