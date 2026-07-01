@@ -2543,7 +2543,7 @@ namespace Nilesoft
 
 						auto w = rc->width(), h = rc->height();
 						auto count = w * h;
-						auto capture_right = rcimg.right - rc->left + (_theme.image.gap / 2);
+						auto capture_right = rcimg.right - rc->left + _theme.image.gap;
 						if(capture_right < long(_theme.image.size))
 							capture_right = _theme.image.size;
 						if(capture_right > w)
@@ -2578,6 +2578,14 @@ namespace Nilesoft
 						long zone_top = 0;
 						long zone_right = capture_right;
 						long zone_bottom = h;
+						auto icon_padding = long(_theme.image.size) / 8;
+						if(icon_padding < 2)
+							icon_padding = 2;
+
+						auto icon_right = rcimg.right - rc->left;
+						auto icon_search_right = icon_right + icon_padding;
+						if(icon_search_right > zone_right)
+							icon_search_right = zone_right;
 
 						std::vector<int> color_buckets(32768);
 						for(auto y = zone_top; y < zone_bottom; y++)
@@ -2718,6 +2726,8 @@ namespace Nilesoft
 							{
 								auto bw = c.x2 - c.x1 + 1;
 								auto bh = c.y2 - c.y1 + 1;
+								if(c.x1 >= icon_search_right)
+									continue;
 								if(c.pixels < image_area / 96)
 									continue;
 								if(c.pixels > image_area * 2)
@@ -2744,15 +2754,19 @@ namespace Nilesoft
 								long by1 = merged_y1;
 								long bx2 = merged_x2;
 								long by2 = merged_y2;
+								auto target_size = long(_theme.image.size);
 
-								if(bx1 > 1)
-									bx1--;
-								if(by1 > 1)
-									by1--;
-								if(bx2 + 1 < w)
-									bx2++;
-								if(by2 + 1 < h)
-									by2++;
+								for(auto edge = 0; edge < 3; edge++)
+								{
+									if(bx1 > 0 && bx2 - bx1 + 1 < target_size)
+										bx1--;
+									if(by1 > 0 && by2 - by1 + 1 < target_size)
+										by1--;
+									if(bx2 + 1 < w && bx2 - bx1 + 1 < target_size)
+										bx2++;
+									if(by2 + 1 < h && by2 - by1 + 1 < target_size)
+										by2++;
+								}
 
 								BITMAPINFO bmp{};
 								bmp.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
@@ -2772,12 +2786,30 @@ namespace Nilesoft
 
 									auto bw = bx2 - bx1 + 1;
 									auto bh = by2 - by1 + 1;
-									auto dx0 = (long(_theme.image.size) - bw) / 2;
-									auto dy0 = (long(_theme.image.size) - bh) / 2;
-									if(dx0 < 0)
-										dx0 = 0;
-									if(dy0 < 0)
-										dy0 = 0;
+									auto target_width = bw;
+									auto target_height = bh;
+
+									if(target_width > target_size || target_height > target_size)
+									{
+										if(target_width >= target_height)
+										{
+											target_width = target_size;
+											target_height = (bh * target_size) / bw;
+										}
+										else
+										{
+											target_height = target_size;
+											target_width = (bw * target_size) / bh;
+										}
+
+										if(target_width < 1)
+											target_width = 1;
+										if(target_height < 1)
+											target_height = 1;
+									}
+
+									auto dx0 = (target_size - target_width) / 2;
+									auto dy0 = (target_size - target_height) / 2;
 
 									int visible_pixels = 0;
 									int colorful_pixels = 0;
@@ -2786,16 +2818,15 @@ namespace Nilesoft
 									int min_luma = 255;
 									int max_luma = 0;
 
-									for(auto sy = by1; sy <= by2; sy++)
+									for(auto dy = 0; dy < target_height; dy++)
 									{
-										for(auto sx = bx1; sx <= bx2; sx++)
+										auto sy = by1 + (dy * bh) / target_height;
+
+										for(auto dx = 0; dx < target_width; dx++)
 										{
-											auto dx = dx0 + (sx - bx1);
-											auto dy = dy0 + (sy - by1);
-											if(dx < 0 || dy < 0 ||
-											   dx >= long(_theme.image.size) ||
-											   dy >= long(_theme.image.size))
-												continue;
+											auto sx = bx1 + (dx * bw) / target_width;
+											auto dest_x = dx0 + dx;
+											auto dest_y = dy0 + dy;
 
 											uint32_t p = pixels[sy * w + sx];
 											int pb = p & 0xFF;
@@ -2821,7 +2852,7 @@ namespace Nilesoft
 											auto pre_r = pr * a / 255;
 											auto pre_g = pg * a / 255;
 											auto pre_b = pb * a / 255;
-											bits[dy * _theme.image.size + dx] =
+											bits[dest_y * _theme.image.size + dest_x] =
 												(a << 24) | (pre_r << 16) | (pre_g << 8) | pre_b;
 
 											if(a > 32)
