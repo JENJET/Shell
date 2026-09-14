@@ -176,6 +176,7 @@ namespace Nilesoft
 			long height{};
 			bool visible = true;
 			bool has_scroll = false;
+			int scroll_h = 0;
 			bool scrolled = false;
 			bool de = true;
 			HBITMAP hbitmap{};
@@ -671,6 +672,8 @@ plutovg_move_to(pluto, start.x, start.y);
 
 			WinEventHook _winEventHook;
 			WindowsHook _keyboardHook;
+			WindowsHook _mouseHook;
+			WindowsHook _msgFilterHook;
 			WindowSubclass _windowSubclass;
 
 			Theme _theme;
@@ -782,6 +785,8 @@ plutovg_move_to(pluto, start.x, start.y);
 			static LRESULT __stdcall MenuSubClassProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam, UINT_PTR uIdSubclass, DWORD_PTR dwRefData);
 			static void __stdcall WinEventProc(HWINEVENTHOOK hWinEventHook, DWORD dwEvent, HWND hWnd, LONG idObject, LONG idChild, DWORD idEventThread, DWORD dwmsEventTime);
 			static LRESULT __stdcall KeyboardProc(int nCode, WPARAM wParam, LPARAM lParam);
+			static LRESULT __stdcall MouseProc(int nCode, WPARAM wParam, LPARAM lParam);
+			static LRESULT __stdcall MsgFilterProc(int nCode, WPARAM wParam, LPARAM lParam);
 
 			inline static bool UnRegisterLayer()
 			{

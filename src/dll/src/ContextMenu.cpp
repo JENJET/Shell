@@ -5172,6 +5172,11 @@ namespace Nilesoft
 					_context.Eval(sets->screenshot.directory, _screenshot, true);
 				}
 
+				// Popup menus run a modal loop that does not deliver WM_MOUSEWHEEL
+				// to the subclassed window proc. Capture the wheel here instead.
+				_msgFilterHook.hook(WH_MSGFILTER, MsgFilterProc, ThreadId);
+				_mouseHook.hook(WH_MOUSE_LL, MouseProc, Initializer::HInstance, 0);
+
 				hCursor = ::LoadCursorW(nullptr, IDC_ARROW);
 
 				if(hwnd.active)
@@ -5252,6 +5257,8 @@ namespace Nilesoft
 				}
 
 				_keyboardHook.unhook();
+				_mouseHook.unhook();
+				_msgFilterHook.unhook();
 				
 				if(_winEventHook)
 				{
@@ -6309,6 +6316,231 @@ namespace Nilesoft
 		}
 		int bbb = 0;
 		int ixi = 0;
+
+		static int menu_row_height(ContextMenu *ctx, WND *wnd)
+		{
+			long h = ctx->_theme.view2;
+			if(wnd)
+			{
+				if(!wnd->hMenu && wnd->handle)
+					wnd->hMenu = GET_HMENU(wnd->handle);
+				if(wnd->hMenu)
+				{
+					auto it = ctx->_menus.find(wnd->hMenu);
+					if(it != ctx->_menus.end() && it->second.draw.height > 0)
+					{
+						h = it->second.draw.height + ctx->_theme.back.height();
+						if(h & 1)
+							h++;
+					}
+				}
+			}
+			if(h < 8)
+				h = ctx->dpi(24);
+			return static_cast<int>(h);
+		}
+
+		// Chevron strip only — not a full menu row, or the last item is eaten.
+		static int menu_arrow_height(ContextMenu *ctx)
+		{
+			int h = ctx->dpi(16);
+			return h < 8 ? 8 : h;
+		}
+
+		static int menu_sep_height(ContextMenu *ctx)
+		{
+			int h = ctx->_theme.separator.margin.height() + ctx->_theme.separator.size;
+			return h > 0 ? h : ctx->dpi(8);
+		}
+
+		static int menu_entry_height(ContextMenu *ctx, WND *wnd, HMENU hMenu, int index)
+		{
+			MENUITEMINFOW mii{ sizeof(mii), MIIM_FTYPE | MIIM_ID };
+			if(!hMenu || !::GetMenuItemInfoW(hMenu, index, TRUE, &mii))
+				return menu_row_height(ctx, wnd);
+			if(mii.fType & MFT_SEPARATOR)
+				return menu_sep_height(ctx);
+
+			auto item = get_item(mii.wID, hMenu, ctx->_items);
+			if(item)
+			{
+				if(item->cch == 0)
+				{
+					if(item->is_spacer())
+						return static_cast<int>(ctx->dpi(10u));
+					int v = ctx->_theme.view2;
+					if(v < static_cast<int>(ctx->_theme.image.size))
+						v = static_cast<int>(ctx->_theme.image.size);
+					return v;
+				}
+				int h = static_cast<int>(item->size.cy + ctx->_theme.back.height());
+				if(h & 1)
+					h++;
+				return h;
+			}
+			return menu_row_height(ctx, wnd);
+		}
+
+		static int menu_content_height(ContextMenu *ctx, WND *wnd)
+		{
+			HMENU hMenu = wnd && wnd->hMenu ? wnd->hMenu : nullptr;
+			if(!hMenu && wnd && wnd->handle)
+				hMenu = wnd->hMenu = GET_HMENU(wnd->handle);
+			if(!hMenu)
+				return 0;
+
+			int count = ::GetMenuItemCount(hMenu);
+			int total = 0;
+			for(int i = 0; i < count; i++)
+				total += menu_entry_height(ctx, wnd, hMenu, i);
+			return total;
+		}
+
+		static int menu_pack_height(ContextMenu *ctx, WND *wnd, HMENU hMenu, int count, int available, bool from_end)
+		{
+			int used = 0;
+			if(from_end)
+			{
+				for(int i = count - 1; i >= 0; i--)
+				{
+					int ih = menu_entry_height(ctx, wnd, hMenu, i);
+					if(used + ih > available)
+						break;
+					used += ih;
+				}
+			}
+			else
+			{
+				for(int i = 0; i < count; i++)
+				{
+					int ih = menu_entry_height(ctx, wnd, hMenu, i);
+					if(used + ih > available)
+						break;
+					used += ih;
+				}
+			}
+			return used;
+		}
+
+		static int menu_fit_inner_height(ContextMenu *ctx, WND *wnd, int available)
+		{
+			int item_h = menu_row_height(ctx, wnd);
+			if(available < item_h)
+				return available > 0 ? available : item_h;
+
+			HMENU hMenu = wnd && wnd->hMenu ? wnd->hMenu : nullptr;
+			if(!hMenu && wnd && wnd->handle)
+				hMenu = wnd->hMenu = GET_HMENU(wnd->handle);
+			if(!hMenu)
+				return available - (available % item_h);
+
+			int count = ::GetMenuItemCount(hMenu);
+			int used = menu_pack_height(ctx, wnd, hMenu, count, available, false);
+			return used > 0 ? used : item_h;
+		}
+
+		static WPARAM overflow_arrow_at_screen(WND *wnd, POINT pt)
+		{
+			if(!wnd || !wnd->has_scroll || !wnd->handle)
+				return 0;
+			int h = wnd->scroll_h > 0 ? wnd->scroll_h : 16;
+			RECT wr{};
+			::GetWindowRect(wnd->handle, &wr);
+			if(pt.y >= wr.top && pt.y < wr.top + h)
+				return (WPARAM)(LONG_PTR)-3;
+			if(pt.y < wr.bottom && pt.y >= wr.bottom - h)
+				return (WPARAM)(LONG_PTR)-4;
+			return 0;
+		}
+
+		static void paint_overflow_chrome(ContextMenu *ctx, WND *wnd)
+		{
+			if(!ctx || !wnd || !wnd->has_scroll || !wnd->handle)
+				return;
+
+			int h = wnd->scroll_h > 0 ? wnd->scroll_h : menu_arrow_height(ctx);
+			RECT wr{};
+			::GetWindowRect(wnd->handle, &wr);
+			int width = wr.right - wr.left;
+			int height = wr.bottom - wr.top;
+			if(width <= 0 || height <= 0)
+				return;
+
+			if(!wnd->hdc)
+				wnd->hdc = ::GetWindowDC(wnd->handle);
+
+			HBRUSH hb = static_cast<HBRUSH>(::GetStockObject(BLACK_BRUSH));
+			Rect rc = { 0, 0, width, h };
+			::FillRect(wnd->hdc, rc, hb);
+			rc = { 0, height - h, width, height };
+			::FillRect(wnd->hdc, rc, hb);
+
+			auto txtfmt = DT_NOCLIP | DT_SINGLELINE | DT_VCENTER | DT_CENTER;
+			rc = { 0, 0, width, h };
+			ctx->draw_string(wnd->hdc, ctx->font.icon, &rc, ctx->_theme.symbols.chevron.nor, L"\uE009", 1, txtfmt);
+			rc = { 0, height - h, width, height };
+			ctx->draw_string(wnd->hdc, ctx->font.icon, &rc, ctx->_theme.symbols.chevron.nor, L"\uE00A", 1, txtfmt);
+		}
+
+		static WND *menu_wnd_from_point(POINT pt)
+		{
+			HWND hHit = ::WindowFromPoint(pt);
+			if(auto wnd = WND::get_prop(hHit); wnd)
+				return wnd;
+
+			for(auto &p : ContextMenu::Processes)
+			{
+				auto ctx = p.first;
+				if(!ctx)
+					continue;
+				for(auto it = ctx->_level.rbegin(); it != ctx->_level.rend(); ++it)
+				{
+					auto w = *it;
+					if(!w)
+						continue;
+					if(hHit && (hHit == w->handle || hHit == w->layer.handle || hHit == w->blurry.handle))
+						return w;
+					RECT rc{};
+					if(w->handle && ::GetWindowRect(w->handle, &rc) && ::PtInRect(&rc, pt))
+						return w;
+				}
+			}
+			return nullptr;
+		}
+
+		static bool scroll_overflow_menu(HWND hWnd, WND *wnd, int delta)
+		{
+			if(!hWnd || !wnd || !wnd->has_scroll || delta == 0)
+				return false;
+
+			// Sign-extend so 64-bit WPARAM matches kernel comparisons with -3/-4.
+			WPARAM arrow = (delta > 0) ? (WPARAM)(LONG_PTR)-3 : (WPARAM)(LONG_PTR)-4;
+
+			int steps = delta < 0 ? -delta : delta;
+			steps /= WHEEL_DELTA;
+			if(steps < 1)
+				steps = 1;
+
+			for(int i = 0; i < steps; ++i)
+			{
+				::SendMessageW(hWnd, MN_SELECTITEM, arrow, 0);
+				::SendMessageW(hWnd, MN_BUTTONDOWN, arrow, 0);
+				::SendMessageW(hWnd, MN_BUTTONUP, arrow, 0);
+			}
+			::RedrawWindow(hWnd, nullptr, nullptr,
+						   RDW_INVALIDATE | RDW_ERASE | RDW_FRAME | RDW_UPDATENOW);
+			paint_overflow_chrome(wnd->ctx, wnd);
+			return true;
+		}
+
+		static bool handle_menu_wheel(POINT pt, int delta)
+		{
+			auto wnd = menu_wnd_from_point(pt);
+			if(!wnd)
+				return false;
+			return scroll_overflow_menu(wnd->handle, wnd, delta);
+		}
+
 		LRESULT __stdcall ContextMenu::MenuSubClassProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam,
 														[[maybe_unused]] UINT_PTR uIdSubclass,
 														DWORD_PTR dwRefData)
@@ -6396,32 +6628,28 @@ namespace Nilesoft
 					//pncc->rgrc[2] is the client rectangle
 					//lret = DefWindowProc(hWnd, WM_NCCALCSIZE, wParam, lParam);
 					auto fCalcValidRects = static_cast<BOOL>(wParam);
-					// Calculate new NCCALCSIZE_PARAMS based on custom NCA inset.
+					auto inset_menu_nc = [&](RECT *r)
+					{
+						r->left += theme->border.size + theme->border.padding.left;
+						r->top += theme->border.size + theme->border.padding.top;
+						r->right += theme->border.size + theme->border.padding.right;
+						r->bottom += theme->border.size + theme->border.padding.bottom;
+						if(wnd->has_scroll)
+						{
+							int sh = wnd->scroll_h > 0 ? wnd->scroll_h : menu_arrow_height(ctx);
+							wnd->scroll_h = sh;
+							r->top += sh;
+							r->bottom -= theme->border.size + theme->border.padding.bottom + sh;
+						}
+					};
 					if(fCalcValidRects)
 					{
 						[[maybe_unused]] auto nc = reinterpret_cast<NCCALCSIZE_PARAMS *>(lParam);
-						//if(++_WM_NCCALCSIZE == 1)
-						{
-							//nc->lppos->flags |= SWP_NOREDRAW| SWP_NOCOPYBITS;
-							nc->rgrc[0].left += theme->border.size + theme->border.padding.left;
-							nc->rgrc[0].top += theme->border.size + theme->border.padding.top;
-							nc->rgrc[0].right += theme->border.size + theme->border.padding.right;
-							nc->rgrc[0].bottom += theme->border.size + theme->border.padding.bottom;
-							if(wnd->has_scroll)
-							{
-								nc->rgrc[0].top += ctx->dpi(10);
-								nc->rgrc[0].bottom -= ctx->dpi(10);
-							}
-						}
-					//	return WVR_VALIDRECTS;
+						inset_menu_nc(&nc->rgrc[0]);
 					}
 					else
 					{
-						//auto rect = reinterpret_cast<RECT*>(lParam);
-						//r->top += 200;
-						//const int cxBorder = 2;
-						//const int cyBorder = 2;
-						//InflateRect((LPRECT)lParam, -cxBorder, -cyBorder);
+						inset_menu_nc(reinterpret_cast<RECT *>(lParam));
 					}
 					fix_ugly_flicker();
 					//::DwmFlush();// wait till finished
@@ -6465,10 +6693,24 @@ namespace Nilesoft
 							wp->cx += bz + theme->border.padding.width();
 							wp->cy += bz + theme->border.padding.height();
 
-							if((wp->cy + 100) > ctx->_rcMonitor.height())
+							int sh = menu_arrow_height(ctx);
+							int pad = theme->border.size + theme->border.padding.top;
+							int content = menu_content_height(ctx, wnd);
+							int available = wp->cy - pad;
+							if(content > 0)
+								wnd->has_scroll = content > available;
+							else
+								wnd->has_scroll = wp->cy >= ctx->_rcMonitor.height();
+							if(wnd->has_scroll)
 							{
-								wnd->has_scroll = true;
-								wp->cy -= ctx->dpi(10);
+								wnd->scroll_h = sh;
+								int chrome = pad + sh + sh;
+								int inner = menu_fit_inner_height(ctx, wnd, wp->cy - chrome);
+								wp->cy = inner + chrome;
+							}
+							else
+							{
+								wnd->scroll_h = 0;
 							}
 							/*else
 							{
@@ -6602,6 +6844,8 @@ namespace Nilesoft
 							}*/
 						}
 					}
+					if(wnd->has_scroll)
+						paint_overflow_chrome(ctx, wnd);
 					return lret;
 					//wnd->rect = { wp->x, wp->y, wp->cx, wp->cy };
 					//return ::DefSubclassProc(hWnd, uMsg, wParam, lParam);
@@ -6609,39 +6853,16 @@ namespace Nilesoft
 				case WM_PAINT:
 				{
 					lret = defSubclassProc();
-					//auto_gdi<HBRUSH> _hblack(CreateSolidBrush(0x000000));
-					//::FillRect(wnd->hdc, &wnd->rect, _hblack.get());
-
 					if(wnd->has_scroll)
-					{
-						auto_gdi<HBRUSH> hbblack(CreateSolidBrush(0x000000));
-
-						int h = ctx->dpi(14);
-						Rect rc = { 0, 0, wnd->width, h };
-						::FillRect(wnd->hdc, rc, hbblack.get());
-						
-						rc = { 0, wnd->height - h, wnd->width, wnd->height };
-						::FillRect(wnd->hdc, rc, hbblack.get());
-						
-						auto txtfmt = DT_NOCLIP | DT_SINGLELINE | DT_VCENTER| DT_CENTER;
-
-						rc = { 0, 0, wnd->width, h };
-						ctx->draw_string(wnd->hdc, ctx->font.icon, &rc, ctx->_theme.symbols.chevron.nor, L"\uE009", 1, txtfmt);
-
-						rc = { 0, wnd->height - h, wnd->width, wnd->height };
-						ctx->draw_string(wnd->hdc, ctx->font.icon, &rc, ctx->_theme.symbols.chevron.nor, L"\uE00A", 1, txtfmt);
-
-						//::ExcludeClipRect(wnd->hdc, 0, 0, wnd->width, 20);
-						//::ExcludeClipRect(wnd->hdc, 0, wnd->height - 20, wnd->width, wnd->height);
-					}
-
-					// exlude menu item rectangle to prevent drawing by windows after us
-					//dc.exclude_clip_rect(*rc);
+						paint_overflow_chrome(ctx, wnd);
 					return lret;
 				}
 				case WM_NCPAINT:
-					//lret = defSubclassProc();
+				{
+					if(wnd->has_scroll)
+						paint_overflow_chrome(ctx, wnd);
 					return lret;
+				}
 				case WM_ERASEBKGND:
 				{
 					if(++ixi == 0)
@@ -6825,6 +7046,8 @@ namespace Nilesoft
 					::SystemParametersInfoW(SPI_SETSELECTIONFADE, 0, FALSE, 0);
 					lret = defSubclassProc();
 					::SystemParametersInfoW(SPI_SETSELECTIONFADE, 0, (PVOID)TRUE, 0);
+					if(wnd->has_scroll)
+						paint_overflow_chrome(ctx, wnd);
 					return lret;
 				}
 				break;
@@ -6838,23 +7061,11 @@ namespace Nilesoft
 					//m_log->info(L"%s", Window(h).classn_name().c_str());
 					return lret;
 				}
-				case WM_MOUSEHWHEEL:
 				case WM_MOUSEWHEEL:
 				{
-					int delta = GET_WHEEL_DELTA_WPARAM(wParam);
-					if(delta > 0)
-					{
-						//Mouse Wheel Up
-					}
-					else
-					{
-						//Mouse Wheel Down
-					}
-
-					lret = defSubclassProc();
-					//auto h = (HWND)ret;
-					//m_log->info(L"%s", Window(h).classn_name().c_str());
-					return lret;
+					if(scroll_overflow_menu(hWnd, wnd, GET_WHEEL_DELTA_WPARAM(wParam)))
+						return 0;
+					break;
 				}
 				case WM_CHAR:
 				case WM_SYSCHAR:
@@ -6905,6 +7116,36 @@ namespace Nilesoft
 				case WM_DEVICECHANGE:
 				case WM_CREATE:
 					break;
+				case WM_NCLBUTTONDOWN:
+				case WM_NCLBUTTONDBLCLK:
+				{
+					if(wnd->has_scroll)
+					{
+						POINT pt{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+						if(WPARAM arrow = overflow_arrow_at_screen(wnd, pt))
+						{
+							::SendMessageW(hWnd, MN_SELECTITEM, arrow, 0);
+							::SendMessageW(hWnd, MN_BUTTONDOWN, arrow, 0);
+							paint_overflow_chrome(ctx, wnd);
+							return 0;
+						}
+					}
+					break;
+				}
+				case WM_NCLBUTTONUP:
+				{
+					if(wnd->has_scroll)
+					{
+						POINT pt{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+						if(WPARAM arrow = overflow_arrow_at_screen(wnd, pt))
+						{
+							::SendMessageW(hWnd, MN_BUTTONUP, arrow, 0);
+							paint_overflow_chrome(ctx, wnd);
+							return 0;
+						}
+					}
+					break;
+				}
 				case WM_NCHITTEST:
 				case MN_SETTIMERTOOPENHIERARCHY:
 				case MN_ENDMENU:
@@ -6935,7 +7176,14 @@ namespace Nilesoft
 					break;
 			}
 			//_log.info(L"0x%0.4x\t%s", uMsg, msg_map[uMsg]);
-			return defSubclassProc();
+			lret = defSubclassProc();
+			if(wnd->has_scroll &&
+			   (uMsg == MN_BUTTONDOWN || uMsg == MN_BUTTONUP ||
+				(uMsg == WM_TIMER && (wParam == IDSYS_MNUP || wParam == IDSYS_MNDOWN))))
+			{
+				paint_overflow_chrome(ctx, wnd);
+			}
+			return lret;
 		}
 
 
@@ -6978,6 +7226,34 @@ namespace Nilesoft
 
 		skip:
 			// NOTE: The first parameter is always ignored
+			return WindowsHook::CallNext(nullptr, nCode, wParam, lParam);
+		}
+
+		LRESULT __stdcall ContextMenu::MouseProc(int nCode, WPARAM wParam, LPARAM lParam)
+		{
+			if(nCode == HC_ACTION && wParam == WM_MOUSEWHEEL)
+			{
+				auto info = reinterpret_cast<MSLLHOOKSTRUCT *>(lParam);
+				if(info && handle_menu_wheel(info->pt, GET_WHEEL_DELTA_WPARAM(info->mouseData)))
+					return 1;
+			}
+			return WindowsHook::CallNext(nullptr, nCode, wParam, lParam);
+		}
+
+		LRESULT __stdcall ContextMenu::MsgFilterProc(int nCode, WPARAM wParam, LPARAM lParam)
+		{
+			if(nCode == MSGF_MENU)
+			{
+				auto msg = reinterpret_cast<MSG *>(lParam);
+				if(msg && msg->message == WM_MOUSEWHEEL)
+				{
+					if(handle_menu_wheel(msg->pt, GET_WHEEL_DELTA_WPARAM(msg->wParam)))
+					{
+						msg->message = WM_NULL;
+						return TRUE;
+					}
+				}
+			}
 			return WindowsHook::CallNext(nullptr, nCode, wParam, lParam);
 		}
 
@@ -7134,6 +7410,14 @@ namespace Nilesoft
 						}*/
 						break;
 					}
+					case WM_MOUSEWHEEL:
+					{
+						POINT pt{};
+						::GetCursorPos(&pt);
+						if(handle_menu_wheel(pt, GET_WHEEL_DELTA_WPARAM(wParam)))
+							return 0;
+						break;
+					}
 					// handled by DefWindowProc
 					case WM_UAHINITMENUPOPUP:
 					{
@@ -7197,6 +7481,13 @@ namespace Nilesoft
 
 LRESULT LayerProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 {
+	if(uMsg == WM_MOUSEWHEEL)
+	{
+		POINT pt{};
+		::GetCursorPos(&pt);
+		if(Nilesoft::Shell::handle_menu_wheel(pt, GET_WHEEL_DELTA_WPARAM(wParam)))
+			return 0;
+	}
 	if(uMsg == WM_WINDOWPOSCHANGED)
 	{
 		auto wp = reinterpret_cast<WINDOWPOS *>(lParam);

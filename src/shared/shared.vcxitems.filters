@@ -64,5 +64,6 @@
   </ItemGroup>
   <ItemGroup>
     <None Include="$(MSBuildThisFileDirectory)VC-LTL.props" />
+    <None Include="$(MSBuildThisFileDirectory)packages.config" />
   </ItemGroup>
 </Project>

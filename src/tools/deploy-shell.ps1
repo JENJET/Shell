@@ -4,11 +4,38 @@ param(
 	[int]$Attempts = 20,
 	[int]$DelayMilliseconds = 300,
 	[switch]$NoRestartExplorer,
-	[switch]$NoRestartStoppedProcesses
+	[switch]$NoRestartStoppedProcesses,
+	[Alias('h', '?', 'help')]
+	[switch]$ShowHelp
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+
+function Show-Usage
+{
+	Write-Host "deploy-shell.ps1 - Replace the running NileSoftShell shell.dll and restart affected processes."
+	Write-Host ""
+	Write-Host "Usage:"
+	Write-Host "  .\deploy-shell.ps1 [-Source <path>] [-Destination <path>] [-Attempts <int>] [-DelayMilliseconds <int>]"
+	Write-Host "                     [-NoRestartExplorer] [-NoRestartStoppedProcesses] [-h]"
+	Write-Host ""
+	Write-Host "Parameters:"
+	Write-Host "  -Source <path>              Path of the newly built shell.dll."
+	Write-Host "                              Default: ..\bin\shell.dll (relative to this script)."
+	Write-Host "  -Destination <path>        Target shell.dll to replace. Default: D:\Softs\NileSoftShell\shell.dll."
+	Write-Host "  -Attempts <int>            Number of copy attempts before giving up. Default: 20."
+	Write-Host "  -DelayMilliseconds <int>   Delay between copy attempts. Default: 300."
+	Write-Host "  -NoRestartExplorer         Do not start explorer.exe if it is not running."
+	Write-Host "  -NoRestartStoppedProcesses Do not restart the processes that were stopped to release shell.dll."
+	Write-Host "  -h, -help, -?              Show this help text."
+}
+
+if($ShowHelp)
+{
+	Show-Usage
+	exit 0
+}
 
 function Get-FullPath($path)
 {
