@@ -177,7 +177,22 @@ namespace Nilesoft
 			bool visible = true;
 			bool has_scroll = false;
 			int scroll_h = 0;
-			bool scrolled = false;
+			int scroll_view_h = 0;
+			int scroll_anchor = 0;
+			int scroll_offset = 0;
+			int scroll_hover_index = -1;
+			int scroll_selected_index = -1;
+			bool suppress_scroll_draw = false;
+			HDC scroll_buffer_dc{};
+			HBITMAP scroll_buffer_bitmap{};
+			HGDIOBJ scroll_buffer_previous_bitmap{};
+			int scroll_buffer_width = 0;
+			int scroll_buffer_height = 0;
+			HDC chrome_buffer_dc{};
+			HBITMAP chrome_buffer_bitmap{};
+			HGDIOBJ chrome_buffer_previous_bitmap{};
+			int chrome_buffer_width = 0;
+			int chrome_buffer_height = 0;
 			bool de = true;
 			HBITMAP hbitmap{};
 			ContextMenu *ctx{};
@@ -195,9 +210,32 @@ namespace Nilesoft
 				//cs.unlock();
 				blurry.destroy();
 				layer.destroy();
+				if(scroll_buffer_dc)
+				{
+					if(scroll_buffer_previous_bitmap)
+						::SelectObject(scroll_buffer_dc, scroll_buffer_previous_bitmap);
+					if(scroll_buffer_bitmap)
+						::DeleteObject(scroll_buffer_bitmap);
+					::DeleteDC(scroll_buffer_dc);
+				}
+				if(chrome_buffer_dc)
+				{
+					if(chrome_buffer_previous_bitmap)
+						::SelectObject(chrome_buffer_dc, chrome_buffer_previous_bitmap);
+					if(chrome_buffer_bitmap)
+						::DeleteObject(chrome_buffer_bitmap);
+					::DeleteDC(chrome_buffer_dc);
+				}
 				if(hbitmap) ::DeleteObject(hbitmap);
 				if(hdc) ::ReleaseDC(handle, hdc);
 				hbitmap = {};
+				scroll_buffer_dc = {};
+				scroll_buffer_bitmap = {};
+				scroll_buffer_previous_bitmap = {};
+				chrome_buffer_dc = {};
+				chrome_buffer_bitmap = {};
+				chrome_buffer_previous_bitmap = {};
+				hdc = {};
 				handle = {};
 			}
 
@@ -354,8 +392,8 @@ plutovg_move_to(pluto, start.x, start.y);
 				bool has_col{};
 				HWND wnd{};
 				MenuItemInfo *owner{};
-				long popup_height{};
 				string path;
+				std::vector<MenuItemInfo *> items;
 
 				std::vector<MenuItemInfo *> statics;
 				std::vector<NativeMenu *> dynamics;

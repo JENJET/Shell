@@ -33,14 +33,14 @@
 # Other junk
 .DS_Store
 
-src/.vs/
-src/exe/obj/
-src/dll/obj/
-src/setup/ca/obj/
-src/setup/wix/obj/
+*.log
+*.exp
+*.pdb
+
+.vs
+obj
+
 src/packages/
-src/bin/*.exp
 src/bin/*.lib
-src/bin/*.log
 src/bin/*.msi
 src/bin/*.wixpdb
