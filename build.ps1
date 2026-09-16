@@ -247,10 +247,24 @@ function Get-CommandLineArguments($commandLine, $executablePath)
 	return $null
 }
 
+function Get-FileSha256($path)
+{
+	$sha256 = [System.Security.Cryptography.SHA256]::Create()
+	try
+	{
+		$bytes = [System.IO.File]::ReadAllBytes($path)
+		return [System.BitConverter]::ToString($sha256.ComputeHash($bytes)).Replace('-', '')
+	}
+	finally
+	{
+		$sha256.Dispose()
+	}
+}
+
 function Show-OutputInfo($path)
 {
 	Get-Item -LiteralPath $path | Select-Object FullName, Length, LastWriteTime
-	Get-FileHash -Algorithm SHA256 -LiteralPath $path | Select-Object Path, Hash
+	[PSCustomObject]@{ Path = $path; Hash = Get-FileSha256 $path }
 }
 
 function Deploy-ShellDll($sourcePath, $destinationPath)
@@ -354,9 +368,9 @@ function Deploy-ShellDll($sourcePath, $destinationPath)
 		}
 	}
 
-	$sourceHash = Get-FileHash -Algorithm SHA256 -LiteralPath $sourcePath
-	$destinationHash = Get-FileHash -Algorithm SHA256 -LiteralPath $destinationPath
-	if($sourceHash.Hash -ne $destinationHash.Hash)
+	$sourceHash = Get-FileSha256 $sourcePath
+	$destinationHash = Get-FileSha256 $destinationPath
+	if($sourceHash -ne $destinationHash)
 	{
 		throw "Hash mismatch after copy."
 	}
